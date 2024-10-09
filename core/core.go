@@ -33,6 +33,7 @@ import (
 const (
 	bazelReal               = "BAZEL_REAL"
 	skipWrapperEnv          = "BAZELISK_SKIP_WRAPPER"
+	bazeliskEnv             = "BAZELISK"
 	defaultWrapperDirectory = "./tools"
 	defaultWrapperName      = "bazel"
 	maxDirLength            = 255
@@ -165,14 +166,14 @@ func RunBazeliskWithArgsFuncAndConfigAndOut(argsFunc ArgsFunc, repos *Repositori
 	} else if len(args) > 0 && strings.HasPrefix(args[0], "--bisect") {
 		// When --bisect is present, we run the bisect logic.
 		if !strings.HasPrefix(args[0], "--bisect=") {
-			return -1, fmt.Errorf("Error: --bisect must have a value. Expected format: '--bisect=<good bazel commit>..<bad bazel commit>'")
+			return -1, fmt.Errorf("Error: --bisect must have a value. Expected format: '--bisect=[~]<good bazel commit>..<bad bazel commit>'")
 		}
 		value := args[0][len("--bisect="):]
 		commits := strings.Split(value, "..")
 		if len(commits) == 2 {
 			bisect(commits[0], commits[1], args[1:], bazeliskHome, repos, config)
 		} else {
-			return -1, fmt.Errorf("Error: Invalid format for --bisect. Expected format: '--bisect=<good bazel commit>..<bad bazel commit>'")
+			return -1, fmt.Errorf("Error: Invalid format for --bisect. Expected format: '--bisect=[~]<good bazel commit>..<bad bazel commit>'")
 		}
 	}
 
@@ -214,7 +215,11 @@ func getBazelCommand(args []string) (string, error) {
 
 // getBazeliskHome returns the path to the Bazelisk home directory.
 func getBazeliskHome(config config.Config) (string, error) {
-	bazeliskHome := config.Get("BAZELISK_HOME")
+	bazeliskHome := config.Get("BAZELISK_HOME_" + strings.ToUpper(runtime.GOOS))
+	if len(bazeliskHome) == 0 {
+		bazeliskHome = config.Get("BAZELISK_HOME")
+	}
+
 	if len(bazeliskHome) == 0 {
 		userCacheDir, err := os.UserCacheDir()
 		if err != nil {
@@ -399,10 +404,17 @@ func downloadBazelIfNecessary(version string, bazeliskHome string, bazelForkOrUR
 }
 
 func atomicWriteFile(path string, contents []byte, perm os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	parent := filepath.Dir(path)
+	if err := os.MkdirAll(parent, 0755); err != nil {
 		return fmt.Errorf("failed to MkdirAll parent of %s: %w", path, err)
 	}
-	tmpPath := path + ".tmp"
+	tmpFile, err := os.CreateTemp(parent, filepath.Base(path)+".tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary file in %s: %w", parent, err)
+	}
+	tmpFile.Close()
+	defer os.Remove(tmpFile.Name())
+	tmpPath := tmpFile.Name()
 	if err := os.WriteFile(tmpPath, contents, perm); err != nil {
 		return fmt.Errorf("failed to write file %s: %w", tmpPath, err)
 	}
@@ -453,12 +465,20 @@ func downloadBazelToCAS(version string, bazeliskHome string, repos *Repositories
 	f.Close()
 	actualSha256 := strings.ToLower(fmt.Sprintf("%x", h.Sum(nil)))
 
-	pathToBazelInCAS := filepath.Join(casDir, actualSha256, "bin", "bazel"+platforms.DetermineExecutableFilenameSuffix())
-	if err := os.MkdirAll(filepath.Dir(pathToBazelInCAS), 0755); err != nil {
+	bazelInCASBasename := "bazel" + platforms.DetermineExecutableFilenameSuffix()
+	pathToBazelInCAS := filepath.Join(casDir, actualSha256, "bin", bazelInCASBasename)
+	dirForBazelInCAS := filepath.Dir(pathToBazelInCAS)
+	if err := os.MkdirAll(dirForBazelInCAS, 0755); err != nil {
 		return "", "", fmt.Errorf("failed to MkdirAll parent of %s: %w", pathToBazelInCAS, err)
 	}
 
-	tmpPathInCorrectDirectory := pathToBazelInCAS + ".tmp"
+	tmpPathFile, err := os.CreateTemp(dirForBazelInCAS, bazelInCASBasename+".tmp")
+	if err != nil {
+		return "", "", fmt.Errorf("failed to create temporary file in %s: %w", dirForBazelInCAS, err)
+	}
+	tmpPathFile.Close()
+	defer os.Remove(tmpPathFile.Name())
+	tmpPathInCorrectDirectory := tmpPathFile.Name()
 	if err := os.Rename(tmpDestPath, tmpPathInCorrectDirectory); err != nil {
 		return "", "", fmt.Errorf("failed to move %s to %s: %w", tmpDestPath, tmpPathInCorrectDirectory, err)
 	}
@@ -576,6 +596,10 @@ func makeBazelCmd(bazel string, args []string, out io.Writer, config config.Conf
 	cmd.Env = append(os.Environ(), skipWrapperEnv+"=true")
 	if execPath != bazel {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", bazelReal, bazel))
+	}
+	selfPath, err := os.Executable()
+	if err != nil {
+		cmd.Env = append(cmd.Env, bazeliskEnv+"="+selfPath)
 	}
 	prependDirToPathList(cmd, filepath.Dir(execPath))
 	cmd.Stdin = os.Stdin
@@ -762,47 +786,47 @@ func sendRequest(url string, config config.Config) (*http.Response, error) {
 	return client.Do(req)
 }
 
-func getBazelCommitsBetween(goodCommit string, badCommit string, config config.Config) (string, []string, error) {
+func getBazelCommitsBetween(oldCommit string, newCommit string, config config.Config) (string, []string, error) {
 	commitList := make([]string, 0)
 	page := 1
 	perPage := 250 // 250 is the maximum number of commits per page
 
 	for {
-		url := fmt.Sprintf("https://api.github.com/repos/bazelbuild/bazel/compare/%s...%s?page=%d&per_page=%d", goodCommit, badCommit, page, perPage)
+		url := fmt.Sprintf("https://api.github.com/repos/bazelbuild/bazel/compare/%s...%s?page=%d&per_page=%d", oldCommit, newCommit, page, perPage)
 
 		response, err := sendRequest(url, config)
 		if err != nil {
-			return goodCommit, nil, fmt.Errorf("Error fetching commit data: %v", err)
+			return oldCommit, nil, fmt.Errorf("Error fetching commit data: %v", err)
 		}
 		defer response.Body.Close()
 
 		body, err := io.ReadAll(response.Body)
 		if err != nil {
-			return goodCommit, nil, fmt.Errorf("Error reading response body: %v", err)
+			return oldCommit, nil, fmt.Errorf("Error reading response body: %v", err)
 		}
 
 		if response.StatusCode == http.StatusNotFound {
-			return goodCommit, nil, fmt.Errorf("repository or commit not found: %s", string(body))
+			return oldCommit, nil, fmt.Errorf("repository or commit not found: %s", string(body))
 		} else if response.StatusCode == 403 {
-			return goodCommit, nil, fmt.Errorf("github API rate limit hit, consider setting BAZELISK_GITHUB_TOKEN: %s", string(body))
+			return oldCommit, nil, fmt.Errorf("github API rate limit hit, consider setting BAZELISK_GITHUB_TOKEN: %s", string(body))
 		} else if response.StatusCode != http.StatusOK {
-			return goodCommit, nil, fmt.Errorf("unexpected response status code %d: %s", response.StatusCode, string(body))
+			return oldCommit, nil, fmt.Errorf("unexpected response status code %d: %s", response.StatusCode, string(body))
 		}
 
 		var compResp compareResponse
 		err = json.Unmarshal(body, &compResp)
 		if err != nil {
-			return goodCommit, nil, fmt.Errorf("Error unmarshaling JSON: %v", err)
+			return oldCommit, nil, fmt.Errorf("Error unmarshaling JSON: %v", err)
 		}
-	
+
 		if len(compResp.Commits) == 0 {
 			break
 		}
 
 		mergeBaseCommit := compResp.MergeBaseCommit.SHA
 		if mergeBaseCommit != compResp.BaseCommit.SHA {
-			fmt.Printf("The good Bazel commit is not an ancestor of the bad Bazel commit, overriding the good Bazel commit to the merge base commit %s\n", mergeBaseCommit)
-			goodCommit = mergeBaseCommit
+			fmt.Printf("The old Bazel commit is not an ancestor of the new Bazel commit, overriding the old Bazel commit to the merge base commit %s\n", mergeBaseCommit)
+			oldCommit = mergeBaseCommit
 		}
 
 		for _, commit := range compResp.Commits {
@@ -821,32 +845,38 @@ func getBazelCommitsBetween(goodCommit string, badCommit string, config config.C
 	}
 
 	if len(commitList) == 0 {
-		return goodCommit, nil, fmt.Errorf("no commits found between (%s, %s], the good commit should be first, maybe try with --bisect=%s..%s ?", goodCommit, badCommit, badCommit, goodCommit)
+		return oldCommit, nil, fmt.Errorf("no commits found between (%s, %s], the old commit should be first, maybe try with --bisect=%s..%s or --bisect=~%s..%s?", oldCommit, newCommit, newCommit, oldCommit, oldCommit, newCommit)
 	}
-	fmt.Printf("Found %d commits between (%s, %s]\n", len(commitList), goodCommit, badCommit)
-	return goodCommit, commitList, nil
+	fmt.Printf("Found %d commits between (%s, %s]\n", len(commitList), oldCommit, newCommit)
+	return oldCommit, commitList, nil
 }
 
-func bisect(goodCommit string, badCommit string, args []string, bazeliskHome string, repos *Repositories, config config.Config) {
+func bisect(oldCommit string, newCommit string, args []string, bazeliskHome string, repos *Repositories, config config.Config) {
+	var oldCommitIs string
+	if strings.HasPrefix(oldCommit, "~") {
+		oldCommit = oldCommit[1:]
+		oldCommitIs = "bad"
+	} else {
+		oldCommitIs = "good"
+	}
 
-	// 1. Get the list of commits between goodCommit and badCommit
-	fmt.Printf("\n\n--- Getting the list of commits between %s and %s\n\n", goodCommit, badCommit)
-	goodCommit, commitList, err := getBazelCommitsBetween(goodCommit, badCommit, config)
+	// 1. Get the list of commits between oldCommit and newCommit
+	fmt.Printf("\n\n--- Getting the list of commits between %s and %s\n\n", oldCommit, newCommit)
+	oldCommit, commitList, err := getBazelCommitsBetween(oldCommit, newCommit, config)
 	if err != nil {
 		log.Fatalf("Failed to get commits: %v", err)
-		os.Exit(1)
 	}
 
-	// 2. Check if goodCommit is actually good
-	fmt.Printf("\n\n--- Verifying if the given good Bazel commit (%s) is actually good\n\n", goodCommit)
-	bazelExitCode, err := testWithBazelAtCommit(goodCommit, args, bazeliskHome, repos, config)
+	// 2. Check if oldCommit is actually good/bad as specified
+	fmt.Printf("\n\n--- Verifying if the given %s Bazel commit (%s) is actually %s\n\n", oldCommitIs, oldCommit, oldCommitIs)
+	bazelExitCode, err := testWithBazelAtCommit(oldCommit, args, bazeliskHome, repos, config)
 	if err != nil {
 		log.Fatalf("could not run Bazel: %v", err)
-		os.Exit(1)
 	}
-	if bazelExitCode != 0 {
+	if oldCommitIs == "good" && bazelExitCode != 0 {
 		fmt.Printf("Failure: Given good bazel commit is already broken.\n")
-		os.Exit(1)
+	} else if oldCommitIs == "bad" && bazelExitCode == 0 {
+		fmt.Printf("Failure: Given bad bazel commit is already fixed.\n")
 	}
 
 	// 3. Bisect commits
@@ -860,24 +890,39 @@ func bisect(goodCommit string, badCommit string, args []string, bazeliskHome str
 		bazelExitCode, err := testWithBazelAtCommit(midCommit, args, bazeliskHome, repos, config)
 		if err != nil {
 			log.Fatalf("could not run Bazel: %v", err)
-			os.Exit(1)
 		}
 		if bazelExitCode == 0 {
 			fmt.Printf("\n\n--- Succeeded at %s\n\n", midCommit)
-			left = mid + 1
+			if oldCommitIs == "good" {
+				left = mid + 1
+			} else {
+				right = mid
+			}
 		} else {
 			fmt.Printf("\n\n--- Failed at %s\n\n", midCommit)
-			right = mid
+			if oldCommitIs == "good" {
+				right = mid
+			} else {
+				left = mid + 1
+			}
 		}
 	}
 
 	// 4. Print the result
 	fmt.Printf("\n\n--- Bisect Result\n\n")
 	if right == len(commitList) {
-		fmt.Printf("first bad commit not found, every commit succeeded.\n")
+		if oldCommitIs == "good" {
+			fmt.Printf("first bad commit not found, every commit succeeded.\n")
+		} else {
+			fmt.Printf("first good commit not found, every commit failed.\n")
+		}
 	} else {
-		firstBadCommit := commitList[right]
-		fmt.Printf("first bad commit is https://github.com/bazelbuild/bazel/commit/%s\n", firstBadCommit)
+		flippingCommit := commitList[right]
+		if oldCommitIs == "good" {
+			fmt.Printf("first bad commit is https://github.com/bazelbuild/bazel/commit/%s\n", flippingCommit)
+		} else {
+			fmt.Printf("first good commit is https://github.com/bazelbuild/bazel/commit/%s\n", flippingCommit)
+		}
 	}
 
 	os.Exit(0)

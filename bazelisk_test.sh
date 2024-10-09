@@ -47,7 +47,7 @@ function setup() {
   USER_HOME="$(mktemp -d $TEST_TMPDIR/user.XXXXXX)"
   BAZELISK_HOME="$(mktemp -d $TEST_TMPDIR/home.XXXXXX)"
 
-  cp "$(rlocation __main__/releases_for_tests.json)" "${BAZELISK_HOME}/bazelbuild-releases.json"
+  cp "$(rlocation _main/releases_for_tests.json)" "${BAZELISK_HOME}/bazelbuild-releases.json"
   touch "${BAZELISK_HOME}/bazelbuild-releases.json"
   ln -s "${BAZELISK_HOME}/bazelbuild-releases.json" "${BAZELISK_HOME}/releases.json"
 
@@ -56,30 +56,30 @@ function setup() {
 }
 
 function bazelisk() {
-  if [[ -n $(rlocation __main__/bazelisk.py) ]]; then
+  if [[ -n $(rlocation _main/bazelisk.py) ]]; then
     if [[ $BAZELISK_VERSION == "PY3" ]]; then
       echo "Running Bazelisk with $(python3 -V)..."
-      python3 "$(rlocation __main__/bazelisk.py)" "$@"
+      python3 "$(rlocation _main/bazelisk.py)" "$@"
     else
       echo "Running Bazelisk with $(python -V)..."
-      python "$(rlocation __main__/bazelisk.py)" "$@"
+      python "$(rlocation _main/bazelisk.py)" "$@"
     fi
-  elif [[ -n $(rlocation __main__/windows_amd64_debug/bazelisk.exe) ]]; then
-    "$(rlocation __main__/windows_amd64_debug/bazelisk.exe)" "$@"
-  elif [[ -n $(rlocation __main__/darwin_amd64_debug/bazelisk) ]]; then
-    "$(rlocation __main__/darwin_amd64_debug/bazelisk)" "$@"
-  elif [[ -n $(rlocation __main__/linux_amd64_debug/bazelisk) ]]; then
-    "$(rlocation __main__/linux_amd64_debug/bazelisk)" "$@"
-  elif [[ -n $(rlocation __main__/windows_amd64_stripped/bazelisk.exe) ]]; then
-    "$(rlocation __main__/windows_amd64_stripped/bazelisk.exe)" "$@"
-  elif [[ -n $(rlocation __main__/darwin_amd64_stripped/bazelisk) ]]; then
-    "$(rlocation __main__/darwin_amd64_stripped/bazelisk)" "$@"
-  elif [[ -n $(rlocation __main__/linux_amd64_stripped/bazelisk) ]]; then
-    "$(rlocation __main__/linux_amd64_stripped/bazelisk)" "$@"
-  elif [[ -n $(rlocation __main__/bazelisk_/bazelisk) ]]; then
-    "$(rlocation __main__/bazelisk_/bazelisk)" "$@"
-  elif [[ -n $(rlocation __main__/bazelisk_/bazelisk.exe) ]]; then
-    "$(rlocation __main__/bazelisk_/bazelisk.exe)" "$@"
+  elif [[ -n $(rlocation _main/windows_amd64_debug/bazelisk.exe) ]]; then
+    "$(rlocation _main/windows_amd64_debug/bazelisk.exe)" "$@"
+  elif [[ -n $(rlocation _main/darwin_amd64_debug/bazelisk) ]]; then
+    "$(rlocation _main/darwin_amd64_debug/bazelisk)" "$@"
+  elif [[ -n $(rlocation _main/linux_amd64_debug/bazelisk) ]]; then
+    "$(rlocation _main/linux_amd64_debug/bazelisk)" "$@"
+  elif [[ -n $(rlocation _main/windows_amd64_stripped/bazelisk.exe) ]]; then
+    "$(rlocation _main/windows_amd64_stripped/bazelisk.exe)" "$@"
+  elif [[ -n $(rlocation _main/darwin_amd64_stripped/bazelisk) ]]; then
+    "$(rlocation _main/darwin_amd64_stripped/bazelisk)" "$@"
+  elif [[ -n $(rlocation _main/linux_amd64_stripped/bazelisk) ]]; then
+    "$(rlocation _main/linux_amd64_stripped/bazelisk)" "$@"
+  elif [[ -n $(rlocation _main/bazelisk_/bazelisk) ]]; then
+    "$(rlocation _main/bazelisk_/bazelisk)" "$@"
+  elif [[ -n $(rlocation _main/bazelisk_/bazelisk.exe) ]]; then
+    "$(rlocation _main/bazelisk_/bazelisk.exe)" "$@"
   else
     echo "Could not find the bazelisk executable, listing files:"
     find .
@@ -257,17 +257,6 @@ function test_bazel_last_green() {
       (echo "FAIL: 'bazelisk version' of an unreleased binary must not print a build label."; exit 1)
 }
 
-function test_bazel_last_downstream_green() {
-  setup
-
-  USE_BAZEL_VERSION="last_downstream_green" \
-      BAZELISK_HOME="$BAZELISK_HOME" \
-      bazelisk version 2>&1 | tee log
-
-  ! grep "Build label:" log || \
-      (echo "FAIL: 'bazelisk version' of an unreleased binary must not print a build label."; exit 1)
-}
-
 function test_BAZELISK_NOJDK() {
   setup
 
@@ -329,7 +318,7 @@ EOF
 function test_path_is_consistent_regardless_of_base_url() {
   setup
 
-  echo 6.2.0 > .bazelversion
+  echo 7.3.1 > .bazelversion
 
   cat >WORKSPACE <<EOF
 load("//:print_path.bzl", "print_path")
@@ -426,7 +415,7 @@ function test_bazel_verify_sha256() {
   local os="$(uname -s | tr A-Z a-z)"
   case "${os}" in
     darwin)
-      expected_sha256="6E9274042665163de666f13b87aBfE187a9127ed90fF1142bf42cfd45b32CD2b"
+      expected_sha256="dae351f491ead382bfc7c14d8957b9c8d735300c566c2161e34035eab994c1f2"
       ;;
     linux)
       expected_sha256="D93508529d41136065c7b1E5ff555fbfb9d18fd00e768886F2fc7dfb53b05B43"
@@ -516,10 +505,6 @@ echo "# test_bazel_last_green"
 test_bazel_last_green
 echo
 
-echo "# test_bazel_last_downstream_green"
-test_bazel_last_downstream_green
-echo
-
 echo "# test_BAZELISK_NOJDK"
 test_BAZELISK_NOJDK
 echo
@@ -577,10 +562,9 @@ if [[ $BAZELISK_VERSION == "GO" ]]; then
   test_bazel_prepend_binary_directory_to_path_go
   echo
 
-  # Disabled due to https://github.com/bazelbuild/bazelisk/pull/465#issuecomment-1805905082
-  # echo "# test_path_is_consistent_regardless_of_base_url"
-  # test_path_is_consistent_regardless_of_base_url
-  # echo
+  echo "# test_path_is_consistent_regardless_of_base_url"
+  test_path_is_consistent_regardless_of_base_url
+  echo
 
   case "$(uname -s)" in
     MSYS*)
